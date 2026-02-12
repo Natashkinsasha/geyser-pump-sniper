@@ -1,5 +1,3 @@
-import dotenv from "dotenv";
-
 import {
   applyConfigOverrides,
   configFromEnv,
@@ -11,8 +9,6 @@ import { startGeyserStream } from "../services/geyser/stream";
 import { buildCli } from "../cli/buildCli";
 
 export async function main(): Promise<void> {
-  dotenv.config();
-
   const program = buildCli();
   program.parse();
   const opts = program.opts();

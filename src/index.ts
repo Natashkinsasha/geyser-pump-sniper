@@ -1,3 +1,6 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import { logger } from "./lib/logger";
 import { main } from "./app/main";
 

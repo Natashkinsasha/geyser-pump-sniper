@@ -57,6 +57,16 @@ export class Buyer {
 
   async init(): Promise<void> {
     try {
+      const balanceLamports = await this.connection.getBalance(this.wallet.publicKey);
+      logger.info(
+        { wallet: this.wallet.publicKey.toBase58(), balanceSol: (balanceLamports / 1e9).toFixed(6) },
+        "Wallet SOL balance",
+      );
+    } catch (err: any) {
+      logger.warn({ err: err.message }, "Failed to fetch wallet balance");
+    }
+
+    try {
       const globalInfo = await this.connection.getAccountInfo(this.globalPda);
       if (globalInfo && globalInfo.data.length >= 73) {
         this.feeRecipient = new PublicKey(globalInfo.data.subarray(41, 73));
@@ -68,11 +78,12 @@ export class Buyer {
         throw new Error("Global account data too short or not found");
       }
     } catch (err: any) {
-      logger.warn({ err: err.message }, "Failed to read global account");
+      logger.warn({ err: err.message }, "Failed to load fee recipient from global account");
     }
   }
 
-  async buy(mint: PublicKey): Promise<string | null> {
+  async buy(mint: PublicKey, name?: string, symbol?: string): Promise<string | null> {
+    const logCtx = { name, symbol, mint: mint.toBase58() };
     try {
       if (!this.feeRecipient) {
         await this.init();
@@ -81,94 +92,22 @@ export class Buyer {
         }
       }
 
-      const buyAmountLamports = BigInt(
-        Math.floor(this.cfg.buyAmountSol * LAMPORTS_PER_SOL),
-      );
-      const feeAmount = (buyAmountLamports * FEE_BPS) / 10000n;
-      const effectiveSol = buyAmountLamports - feeAmount;
-
-      const tokensOut =
-        (effectiveSol * INITIAL_VIRTUAL_TOKEN_RESERVES) /
-        (INITIAL_VIRTUAL_SOL_RESERVES + effectiveSol);
-
-      const maxSolCost =
-        buyAmountLamports +
-        (buyAmountLamports * BigInt(this.cfg.slippageBps)) / 10000n;
+      const { tokensOut, maxSolCost } = this.computeBuyAmounts();
+      const instructions = this.buildBuyInstructions(mint, tokensOut, maxSolCost);
 
       const [bondingCurve] = PublicKey.findProgramAddressSync(
         [Buffer.from("bonding-curve"), mint.toBuffer()],
         this.pumpProgram,
       );
 
-      const associatedBondingCurve = getAssociatedTokenAddressSync(
-        mint,
-        bondingCurve,
-        true,
-      );
-
-      const associatedUser = getAssociatedTokenAddressSync(
-        mint,
-        this.wallet.publicKey,
-      );
-
       logger.info(
         {
-          mint: mint.toBase58(),
+          ...logCtx,
           tokensOut: tokensOut.toString(),
           maxSolCost: `${(Number(maxSolCost) / LAMPORTS_PER_SOL).toFixed(4)} SOL`,
           bondingCurve: bondingCurve.toBase58(),
         },
         "Building buy transaction",
-      );
-
-      const instructions: TransactionInstruction[] = [];
-
-      instructions.push(
-        ComputeBudgetProgram.setComputeUnitPrice({
-          microLamports: this.cfg.priorityFeeMicroLamports,
-        }),
-      );
-      instructions.push(
-        ComputeBudgetProgram.setComputeUnitLimit({ units: 250_000 }),
-      );
-
-      instructions.push(
-        createAssociatedTokenAccountIdempotentInstruction(
-          this.wallet.publicKey,
-          associatedUser,
-          this.wallet.publicKey,
-          mint,
-        ),
-      );
-
-      const buyData = encodeBuyInstruction(tokensOut, maxSolCost);
-      instructions.push(
-        new TransactionInstruction({
-          programId: this.pumpProgram,
-          keys: [
-            { pubkey: this.globalPda, isSigner: false, isWritable: false },
-            { pubkey: this.feeRecipient, isSigner: false, isWritable: true },
-            { pubkey: mint, isSigner: false, isWritable: false },
-            { pubkey: bondingCurve, isSigner: false, isWritable: true },
-            {
-              pubkey: associatedBondingCurve,
-              isSigner: false,
-              isWritable: true,
-            },
-            { pubkey: associatedUser, isSigner: false, isWritable: true },
-            { pubkey: this.wallet.publicKey, isSigner: true, isWritable: true },
-            {
-              pubkey: SystemProgram.programId,
-              isSigner: false,
-              isWritable: false,
-            },
-            { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-            { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
-            { pubkey: this.eventAuthority, isSigner: false, isWritable: false },
-            { pubkey: this.pumpProgram, isSigner: false, isWritable: false },
-          ],
-          data: buyData,
-        }),
       );
 
       const { blockhash, lastValidBlockHeight } =
@@ -188,28 +127,120 @@ export class Buyer {
         maxRetries: 3,
       });
 
-      logger.info({ sig, mint: mint.toBase58() }, "Buy transaction sent");
+      logger.info({ sig, ...logCtx }, "Buy transaction sent");
 
-      this.connection
-        .confirmTransaction(
-          { signature: sig, blockhash, lastValidBlockHeight },
-          "confirmed",
-        )
-        .then(() => logger.info({ sig }, "Transaction confirmed"))
-        .catch((err: any) =>
-          logger.warn(
-            { sig, err: err.message },
-            "Confirmation timeout or error",
-          ),
-        );
+      const confirmed = await this.pollConfirmation(sig, lastValidBlockHeight);
+      if (confirmed) {
+        logger.info({ sig, ...logCtx }, "✅ Buy SUCCESS — transaction confirmed on-chain");
+      } else {
+        logger.warn({ sig, ...logCtx }, "❌ Buy FAILED — transaction not confirmed");
+      }
 
-      return sig;
+      return confirmed ? sig : null;
     } catch (err: any) {
-      logger.error(
-        { err: err.message, mint: mint.toBase58() },
-        "Buy failed",
-      );
+      logger.error({ err: err.message, ...logCtx }, "Buy failed");
       return null;
+    }
+  }
+
+  private computeBuyAmounts(): { tokensOut: bigint; maxSolCost: bigint } {
+    const buyAmountLamports = BigInt(
+      Math.floor(this.cfg.buyAmountSol * LAMPORTS_PER_SOL),
+    );
+    const feeAmount = (buyAmountLamports * FEE_BPS) / 10000n;
+    const effectiveSol = buyAmountLamports - feeAmount;
+
+    const tokensOut =
+      (effectiveSol * INITIAL_VIRTUAL_TOKEN_RESERVES) /
+      (INITIAL_VIRTUAL_SOL_RESERVES + effectiveSol);
+
+    const maxSolCost =
+      buyAmountLamports +
+      (buyAmountLamports * BigInt(this.cfg.slippageBps)) / 10000n;
+
+    return { tokensOut, maxSolCost };
+  }
+
+  private buildBuyInstructions(
+    mint: PublicKey,
+    tokensOut: bigint,
+    maxSolCost: bigint,
+  ): TransactionInstruction[] {
+    const [bondingCurve] = PublicKey.findProgramAddressSync(
+      [Buffer.from("bonding-curve"), mint.toBuffer()],
+      this.pumpProgram,
+    );
+    const associatedBondingCurve = getAssociatedTokenAddressSync(mint, bondingCurve, true);
+    const associatedUser = getAssociatedTokenAddressSync(mint, this.wallet.publicKey);
+
+    return [
+      ComputeBudgetProgram.setComputeUnitPrice({
+        microLamports: this.cfg.priorityFeeMicroLamports,
+      }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 250_000 }),
+      createAssociatedTokenAccountIdempotentInstruction(
+        this.wallet.publicKey,
+        associatedUser,
+        this.wallet.publicKey,
+        mint,
+      ),
+      new TransactionInstruction({
+        programId: this.pumpProgram,
+        keys: [
+          { pubkey: this.globalPda, isSigner: false, isWritable: false },
+          { pubkey: this.feeRecipient!, isSigner: false, isWritable: true },
+          { pubkey: mint, isSigner: false, isWritable: false },
+          { pubkey: bondingCurve, isSigner: false, isWritable: true },
+          { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
+          { pubkey: associatedUser, isSigner: false, isWritable: true },
+          { pubkey: this.wallet.publicKey, isSigner: true, isWritable: true },
+          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+          { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+          { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
+          { pubkey: this.eventAuthority, isSigner: false, isWritable: false },
+          { pubkey: this.pumpProgram, isSigner: false, isWritable: false },
+        ],
+        data: encodeBuyInstruction(tokensOut, maxSolCost),
+      }),
+    ];
+  }
+
+  private async pollConfirmation(
+    sig: string,
+    lastValidBlockHeight: number,
+    intervalMs = 2_000,
+  ): Promise<boolean> {
+    try {
+      while (true) {
+        const { value } = await this.connection.getSignatureStatuses([sig]);
+        const status = value?.[0];
+
+        if (status?.err) {
+          logger.error(
+            { sig, err: JSON.stringify(status.err) },
+            "Transaction failed on-chain",
+          );
+          return false;
+        }
+
+        if (
+          status?.confirmationStatus === "confirmed" ||
+          status?.confirmationStatus === "finalized"
+        ) {
+          return true;
+        }
+
+        const currentHeight = await this.connection.getBlockHeight("confirmed");
+        if (currentHeight > lastValidBlockHeight) {
+          logger.warn({ sig }, "Block height exceeded — transaction expired");
+          return false;
+        }
+
+        await new Promise((r) => setTimeout(r, intervalMs));
+      }
+    } catch (err: any) {
+      logger.error({ sig, err: err.message }, "Error polling confirmation");
+      return false;
     }
   }
 }

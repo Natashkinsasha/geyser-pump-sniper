@@ -45,8 +45,8 @@ export function decodeCreateInstruction(
 }
 
 export function encodeBuyInstruction(
-  tokenAmount: Readonly<bigint>,
-  maxSolCost: Readonly<bigint>,
+  tokenAmount: bigint,
+  maxSolCost: bigint,
 ): Buffer {
   const data = Buffer.alloc(8 + 8 + 8);
   BUY_DISCRIMINATOR.copy(data, 0);
