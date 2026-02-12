@@ -151,10 +151,10 @@ function handleCreateEvent(ev: PumpFunCreateEvent, ctx: StreamContext): void {
   );
 
   const _symbolUpper = ev.symbol.toUpperCase();
-  // if (!ctx.targetSymbols.includes(_symbolUpper)) {
-  //   logger.info({ symbol: ev.symbol }, "Symbol does not match targets, skipping");
-  //   return;
-  // }
+  if (!ctx.targetSymbols.includes(_symbolUpper)) {
+    logger.info({ symbol: ev.symbol }, "Symbol does not match targets, skipping");
+    return;
+  }
 
   logger.info({ symbol: ev.symbol, mint: ev.mint }, "Symbol MATCHED — initiating buy");
 

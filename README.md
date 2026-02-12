@@ -86,6 +86,32 @@ npm run dev -- --targets CAT,DOG --buy-amount-sol 0.02 --rpc-url https://api.mai
 - `--priority-fee-micro-lamports`
 - `--pump-program-id`
 
+## Тесты и линтинг
+
+```bash
+# Unit + интеграционные тесты (Vitest)
+npm test
+
+# Тесты в watch-режиме
+npm run test:watch
+
+# Проверка типов
+npm run typecheck
+
+# Линтинг (ESLint + typescript-eslint)
+npm run lint
+
+# Автофикс
+npm run lint:fix
+```
+
+Тесты покрывают:
+- **Config** — парсинг, валидация, CLI-переопределения, полный пайплайн
+- **Decoder** — декодирование/кодирование инструкций Pump.fun
+- **Extract** — извлечение create-событий из транзакций Geyser
+- **Buyer** — интеграционный тест с мок-RPC (init, buy success/failure, computation)
+- **Tx pipeline** — полный пайплайн обработки транзакций
+
 ## Структура проекта
 
 ```
@@ -101,6 +127,7 @@ src/
     parse.ts                      — парсинг env и символов
     overrides.ts                  — применение CLI-переопределений
     validate.ts                   — валидация конфигурации
+    __tests__/                    — unit-тесты конфигурации
   lib/
     logger.ts                     — структурные логи (pino)
   services/
@@ -108,10 +135,14 @@ src/
       types.ts                    — типы транзакций Geyser (TxMessage, TxMeta, PumpFunCreateEvent)
       extract.ts                  — чистые функции извлечения create-событий
       stream.ts                   — подписка на Geyser gRPC, обработка стрима
+      __tests__/                  — unit-тесты extract
     pumpfun/
       constants.ts                — константы bonding curve Pump.fun
       decoder.ts                  — декодер/энкодер инструкций Pump.fun
       buyer.ts                    — класс Buyer: сборка и отправка транзакций
+      __tests__/                  — unit-тесты decoder
+  __tests__/                      — интеграционные тесты (config, tx pipeline, buyer)
+eslint.config.mjs                 — конфиг ESLint (flat config)
 ```
 
 ## Дисклеймер
