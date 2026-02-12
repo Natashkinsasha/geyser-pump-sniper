@@ -62,8 +62,8 @@ export class Buyer {
         { wallet: this.wallet.publicKey.toBase58(), balanceSol: (balanceLamports / 1e9).toFixed(6) },
         "Wallet SOL balance",
       );
-    } catch (err: any) {
-      logger.warn({ err: err.message }, "Failed to fetch wallet balance");
+    } catch (err: unknown) {
+      logger.warn({ err: (err as Error).message }, "Failed to fetch wallet balance");
     }
 
     try {
@@ -77,8 +77,8 @@ export class Buyer {
       } else {
         throw new Error("Global account data too short or not found");
       }
-    } catch (err: any) {
-      logger.warn({ err: err.message }, "Failed to load fee recipient from global account");
+    } catch (err: unknown) {
+      logger.warn({ err: (err as Error).message }, "Failed to load fee recipient from global account");
     }
   }
 
@@ -137,8 +137,8 @@ export class Buyer {
       }
 
       return confirmed ? sig : null;
-    } catch (err: any) {
-      logger.error({ err: err.message, ...logCtx }, "Buy failed");
+    } catch (err: unknown) {
+      logger.error({ err: (err as Error).message, ...logCtx }, "Buy failed");
       return null;
     }
   }
@@ -238,8 +238,8 @@ export class Buyer {
 
         await new Promise((r) => setTimeout(r, intervalMs));
       }
-    } catch (err: any) {
-      logger.error({ sig, err: err.message }, "Error polling confirmation");
+    } catch (err: unknown) {
+      logger.error({ sig, err: (err as Error).message }, "Error polling confirmation");
       return false;
     }
   }

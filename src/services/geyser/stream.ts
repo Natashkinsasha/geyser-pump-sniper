@@ -20,6 +20,10 @@ import type { PumpFunCreateEvent } from "./types";
 /*  Типы                                                               */
 /* ------------------------------------------------------------------ */
 
+/** Нетипизированные данные из Geyser gRPC стрима */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type GeyserStreamData = Record<string, any>;
+
 /** Контекст, разделяемый между функциями обработки стрима */
 interface StreamContext {
   readonly pumpProgramId: string;
@@ -97,7 +101,7 @@ function classifyPumpIxTypes(
 /* ------------------------------------------------------------------ */
 
 /** Обрабатывает служебные сообщения (pong, ping, slot). Возвращает true, если обработано */
-function handleServiceMessage(data: any, msgCount: number): boolean {
+function handleServiceMessage(data: GeyserStreamData, msgCount: number): boolean {
   if (data.pong) {
     logger.debug({ id: data.pong.id, msgCount }, "Received pong");
     return true;
@@ -114,7 +118,7 @@ function handleServiceMessage(data: any, msgCount: number): boolean {
 }
 
 /** Извлекает message и meta из сырых данных транзакции. Возвращает null, если данные невалидны */
-function parseTransactionData(data: any, msgCount: number) {
+function parseTransactionData(data: GeyserStreamData, msgCount: number) {
   const txn = data.transaction;
   const slot = txn.slot;
   const txInner = txn.transaction;
@@ -146,8 +150,8 @@ function handleCreateEvent(ev: PumpFunCreateEvent, ctx: StreamContext): void {
     "Pump.fun token created",
   );
 
-  const symbolUpper = ev.symbol.toUpperCase();
-  // if (!ctx.targetSymbols.includes(symbolUpper)) {
+  const _symbolUpper = ev.symbol.toUpperCase();
+  // if (!ctx.targetSymbols.includes(_symbolUpper)) {
   //   logger.info({ symbol: ev.symbol }, "Symbol does not match targets, skipping");
   //   return;
   // }
@@ -155,13 +159,13 @@ function handleCreateEvent(ev: PumpFunCreateEvent, ctx: StreamContext): void {
   logger.info({ symbol: ev.symbol, mint: ev.mint }, "Symbol MATCHED — initiating buy");
 
   const mint = new PublicKey(ev.mint);
-  ctx.buyer.buy(mint, ev.name, ev.symbol).catch((err: any) => {
+  ctx.buyer.buy(mint, ev.name, ev.symbol).catch((err: Error) => {
     logger.error({ err: err.message, symbol: ev.symbol, mint: ev.mint }, "Unhandled buy error");
   });
 }
 
 /** Обрабатывает входящую транзакцию: извлекает create-события и передаёт на обработку */
-function processTransaction(data: any, ctx: StreamContext): void {
+function processTransaction(data: GeyserStreamData, ctx: StreamContext): void {
   const parsed = parseTransactionData(data, ctx.msgCount);
   if (!parsed) return;
 
@@ -192,7 +196,7 @@ function processTransaction(data: any, ctx: StreamContext): void {
 }
 
 /** Роутер: направляет входящее сообщение стрима в нужный обработчик */
-function handleStreamMessage(data: any, ctx: StreamContext): void {
+function handleStreamMessage(data: GeyserStreamData, ctx: StreamContext): void {
   ctx.msgCount++;
 
   if (ctx.msgCount === 1) {
@@ -216,10 +220,12 @@ function handleStreamMessage(data: any, ctx: StreamContext): void {
 /* ------------------------------------------------------------------ */
 
 /** Запускает периодическую отправку ping для поддержания соединения */
-function startPingKeepAlive(stream: any, intervalMs = 30_000): void {
+type GeyserStream = Awaited<ReturnType<Client["subscribe"]>>;
+
+function startPingKeepAlive(stream: GeyserStream, intervalMs = 30_000): void {
   let pingId = 0;
   setInterval(() => {
-    stream.write(buildPingRequest(++pingId), (err: any) => {
+    stream.write(buildPingRequest(++pingId), (err?: Error | null) => {
       if (err) logger.warn({ err: err.message }, "Ping failed");
     });
   }, intervalMs);
@@ -269,9 +275,9 @@ export async function startGeyserStream(cfg: AppConfig): Promise<void> {
     msgCount: 0,
   };
 
-  stream.on("data", (data: any) => handleStreamMessage(data, ctx));
+  stream.on("data", (data: GeyserStreamData) => handleStreamMessage(data, ctx));
 
-  stream.write(buildSubscribeRequest(cfg.pumpFunProgramId), (err: any) => {
+  stream.write(buildSubscribeRequest(cfg.pumpFunProgramId), (err?: Error | null) => {
     if (err) {
       logger.error({ err: err.message }, "Failed to send subscribe request");
       process.exit(1);
